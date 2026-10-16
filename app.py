@@ -272,20 +272,51 @@ CSS = """
 *{box-sizing:border-box;margin:0;padding:0}
 :root{--bg:#0d0d0e;--panel:#151517;--panel2:#1c1c1f;--border:#232326;--border2:#323237;
 --text:#f4f4f5;--muted:#9c9ca6;--faint:#63636c;--red:#f43f5e;--green:#34d399;--link:#8ab4ff}
-html{-webkit-text-size-adjust:100%}
+html{-webkit-text-size-adjust:100%;overflow-x:hidden}
 body{background:var(--bg);color:var(--text);
 font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-line-height:1.5;font-size:15px;-webkit-font-smoothing:antialiased}
-a{color:inherit;text-decoration:none}
+line-height:1.5;font-size:15px;-webkit-font-smoothing:antialiased;
+overflow-x:hidden;width:100%;max-width:100vw}
+img,video,svg{max-width:100%;height:auto}
+a{color:inherit;text-decoration:none;overflow-wrap:break-word}
 button{font-family:inherit}
-.wrap{max-width:640px;margin:0 auto;min-height:100vh;
-border-left:1px solid var(--border);border-right:1px solid var(--border);background:var(--bg)}
+.wrap{max-width:640px;margin:0 auto;min-height:100vh;width:100%;
+border-left:1px solid var(--border);border-right:1px solid var(--border);background:var(--bg);
+overflow-x:hidden}
 @media(max-width:660px){.wrap{border-left:none;border-right:none}
 .prow{flex-wrap:wrap}
 .pmeta{gap:12px}
-.ptitle{padding:16px 14px 4px}
+.ptitle{padding:16px 14px 4px;font-size:18px}
 .urow{padding:12px 14px;gap:10px}
-.urow .btn{flex:none}
+.urow .btn{flex:none;min-height:44px}
+.urow .who{font-size:14px}
+/* topbar: compact, never overflows */
+.topbar-in{padding:8px 12px;gap:6px}
+.wordmark{font-size:19px}
+/* post: tighter, avatar smaller, no horizontal stretch */
+.post{padding:12px;gap:10px}
+.avatar{width:38px;height:38px;font-size:15px}
+.ptext{font-size:14.5px}
+.phead .tm{font-size:11.5px}
+/* compose */
+.compose{padding:12px;gap:10px}
+/* DM */
+.dmthread{padding:12px}
+.dmbubble{max-width:88%;font-size:14px}
+/* profile */
+.profile{padding:18px 14px 12px}
+.pname{font-size:19px}
+/* search / settings / forms */
+.searchbar{padding:12px}
+.searchbar .btn{min-height:44px}
+.setrow{padding:16px 14px}
+.formbox{margin:32px auto;padding:0 18px}
+/* pagination */
+.pager{padding:14px;flex-wrap:wrap}
+.pager a{min-height:44px;display:flex;align-items:center}
+/* footer */
+.footer{padding:20px 14px 28px}
+/* hamburger nav */
 .nav{display:none}
 .burger{display:flex;align-items:center;justify-content:center;flex:none;
 width:44px;height:44px;border-radius:12px;cursor:pointer;color:var(--muted);
