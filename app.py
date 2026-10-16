@@ -108,7 +108,21 @@ def init_db():
     );
     CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id, created_at DESC);
+    CREATE TABLE IF NOT EXISTS dms (
+        id INTEGER PRIMARY KEY,
+        sender_id INTEGER NOT NULL,
+        recipient_id INTEGER NOT NULL,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        read_at INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS idx_dms_pair ON dms(sender_id, recipient_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_dms_recip ON dms(recipient_id, read_at);
     ''')
+    try:
+        c.execute('ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0')
+    except Exception:
+        pass
     for col in ("ALTER TABLE posts ADD COLUMN edited_at INTEGER",
                 "ALTER TABLE posts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"):
         try:
@@ -149,6 +163,12 @@ def notify(c, user_id, actor_id, kind, post_id=None):
         return
     c.execute('INSERT INTO notifications (user_id, actor_id, kind, post_id, created_at)'
               ' VALUES (?,?,?,?,?)', (user_id, actor_id, kind, post_id, now()))
+
+
+def dm_unread_count(c, user_id):
+    row = c.execute('SELECT COUNT(*) FROM dms WHERE recipient_id=? AND read_at IS NULL',
+                    (user_id,)).fetchone()
+    return row[0] if row else 0
 
 
 def process_mentions(c, body, author_id, post_id):
@@ -233,14 +253,16 @@ def get_session_user(c, cookie_header):
     if not token or not re.fullmatch(r'[0-9a-f]{64}', token):
         return None, None
     row = c.execute('SELECT s.token, s.user_id, s.csrf, u.id, u.username,'
-                    ' u.display_name FROM sessions s JOIN users u ON u.id=s.user_id'
+                    ' u.display_name, u.is_admin FROM sessions s JOIN users u ON u.id=s.user_id'
                     ' WHERE s.token=? AND s.expires_at>?',
                     (token, now())).fetchone()
     if not row:
         return None, None
     user = {'id': row['id'], 'username': row['username'],
             'display_name': row['display_name'],
-            'unread': unread_count(c, row['id'])}
+            'is_admin': bool(row['is_admin']),
+            'unread': unread_count(c, row['id']),
+            'dm_unread': dm_unread_count(c, row['id'])}
     sess = {'token': row['token'], 'csrf': row['csrf']}
     return user, sess
 
@@ -401,6 +423,40 @@ outline:2px solid var(--link);outline-offset:2px}
 .nav a{padding:7px 10px;font-size:13px}
 .pname{font-size:19px}
 }
+.adminbadge{display:inline-block;font-size:10px;font-weight:800;letter-spacing:.05em;
+background:var(--text);color:#0d0d0e;border-radius:4px;padding:2px 6px;vertical-align:2px}
+.dmthread{padding:16px;display:flex;flex-direction:column;gap:8px;max-width:640px}
+.dmrow{display:flex}
+.dmrow.mine{justify-content:flex-end}
+.dmbubble{max-width:78%;background:var(--panel2);border:1px solid var(--border);
+border-radius:16px;padding:10px 14px;font-size:14.5px;line-height:1.5;
+white-space:pre-wrap;word-wrap:break-word}
+.dmrow.mine .dmbubble{background:#2a2a30;border-color:#2a2a30}
+.dmtime{font-size:11px;color:var(--faint);margin-top:4px;font-variant-numeric:tabular-nums}
+.dmcompose{position:sticky;bottom:0;background:rgba(13,13,14,.92);
+backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+border-top:1px solid var(--border);padding:12px 16px}
+.dmcompose form{display:flex;gap:8px}
+.dmcompose input[name=body]{flex:1;background:var(--panel);border:1px solid var(--border2);
+border-radius:999px;padding:12px 18px;color:var(--text);font-size:16px;font-family:inherit;
+min-width:0;transition:border-color .15s}
+.dmcompose input[name=body]:focus{outline:none;border-color:var(--muted)}
+@media(max-width:480px){
+.post{padding:14px}
+.compose{padding:14px}
+.nav a{padding:8px 11px;font-size:13px}
+.pname{font-size:19px}
+.act{padding:10px 12px;font-size:13px;min-height:44px}
+.act svg{width:20px;height:20px}
+button.btn{padding:10px 22px;min-height:44px}
+.topbar-in{padding:10px 12px}
+.dmcompose{padding:10px 12px}
+.dmbubble{max-width:86%}
+textarea{font-size:16px}
+.searchbar input{font-size:16px}
+.setrow input{font-size:16px}
+.field input{font-size:16px}
+}
 """
 
 ICON_REPLY = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
@@ -424,14 +480,18 @@ def page(title, user, body_html, nav='beranda'):
     if user:
         nb = user.get('unread', 0)
         bell = 'Notifications' + ('<span class="badge">%d</span>' % nb if nb else '')
+        dm = user.get('dm_unread', 0)
+        msg = 'Messages' + ('<span class="badge">%d</span>' % dm if dm else '')
         nav_html = ('<a href="/" class="%s">Home</a>'
                     '<a href="/jelajahi" class="%s">Explore</a>'
                     '<a href="/notifikasi" class="%s">%s</a>'
+                    '<a href="/dm" class="%s">%s</a>'
                     '<a href="/cari" class="%s">Search</a>'
                     '<a href="/@%s" class="%s">Profile</a>') % (
                         'on' if nav == 'beranda' else '',
                         'on' if nav == 'jelajahi' else '',
                         'on' if nav == 'notifikasi' else '', bell,
+                        'on' if nav == 'dm' else '', msg,
                         'on' if nav == 'cari' else '',
                         esc(user['username']),
                         'on' if nav == 'profil' else '')
@@ -484,10 +544,11 @@ def act_form(action, post_id, csrf, nxt, inner, cls=''):
 def post_row(r, user, csrf, nxt, show_reposter=True):
     """r: sqlite Row with post fields + counts + author/reposter info."""
     author_link = '/@' + r['username']
-    head = ('<div class="phead"><a class="nm" href="%s">%s</a>'
+    admin_badge = (' <span class="adminbadge">ADMIN</span>' if r.get('author_admin') else '')
+    head = ('<div class="phead"><a class="nm" href="%s">%s</a>%s'
             '<span class="un">@%s</span>'
             '<span class="tm">%s</span></div>') % (
-                author_link, esc(r['display_name']),
+                author_link, esc(r['display_name']), admin_badge,
                 esc(r['username']), esc(rel_time(r['sort_time'])))
     repost_line = ''
     if show_reposter and r['reposter_name']:
@@ -519,6 +580,9 @@ def post_row(r, user, csrf, nxt, show_reposter=True):
             actions.append(act_form('/pin', r['post_id'], csrf, nxt, pin_label, ''))
             actions.append(act_form('/hapus', r['post_id'], csrf, nxt,
                                     'Delete', 'danger'))
+        elif user.get('is_admin'):
+            actions.append(act_form('/hapus', r['post_id'], csrf, nxt,
+                                    'Mod delete', 'danger'))
     else:
         actions.append('<span class="act">%s<span>%s</span></span>'
                        % (ICON_REPOST, fmt_count(r['n_repost'])))
@@ -547,7 +611,7 @@ def compose_box(csrf, user=None, parent_id=None, placeholder='Start a thread...'
 
 # ---------------- queries ----------------
 FEED_SQL = '''
-SELECT f.kind, f.post_id, f.author_id, u.username, u.display_name,
+SELECT f.kind, f.post_id, f.author_id, u.username, u.display_name, u.is_admin AS author_admin,
        f.body, f.edited_at, f.pinned, f.sort_time, f.reposter_id, ru.username AS reposter_name,
        (SELECT COUNT(*) FROM likes l WHERE l.post_id=f.post_id) AS n_like,
        (SELECT COUNT(*) FROM reposts r WHERE r.post_id=f.post_id) AS n_repost,
@@ -565,7 +629,7 @@ LEFT JOIN users ru ON ru.id=f.reposter_id
 '''
 
 POST_SQL = '''
-SELECT p.id AS post_id, p.user_id AS author_id, u.username, u.display_name,
+SELECT p.id AS post_id, p.user_id AS author_id, u.username, u.display_name, u.is_admin AS author_admin,
        p.body, p.edited_at, p.pinned, p.created_at AS sort_time, p.parent_id,
        NULL AS reposter_name, NULL AS reposter_id, 'post' AS kind,
        (SELECT COUNT(*) FROM likes l WHERE l.post_id=p.id) AS n_like,
@@ -705,6 +769,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_edit()
         if p.startswith('/tag/'):
             return self.handle_tag(p[len('/tag/'):])
+        if p == '/dm':
+            return self.handle_dm_inbox()
+        if p.startswith('/dm/'):
+            return self.handle_dm_thread(p[len('/dm/'):])
         self.err_page(404, 'Page not found.')
 
     def feed_items(self, where, params, limit, offset):
@@ -895,8 +963,9 @@ class Handler(BaseHTTPRequestHandler):
                       '<input type="hidden" name="csrf" value="%s">'
                       '<input type="hidden" name="username" value="%s">'
                       '<input type="hidden" name="next" value="%s">'
-                      '<button class="btn" type="submit">%s</button></form>') % (
-                          esc(csrf), esc(username), esc(nxt), lbl)
+                      '<button class="btn" type="submit">%s</button></form>'
+                      '<div style="margin-top:8px"><a href="/dm/%s">Message</a></div>') % (
+                          esc(csrf), esc(username), esc(nxt), lbl, esc(username))
         else:
             action = ''
         body = ('<div class="profile"><div class="prow"><div>'
@@ -1063,6 +1132,9 @@ class Handler(BaseHTTPRequestHandler):
             elif r['kind'] == 'mention':
                 txt = '%s mentioned you' % actor
                 link = '/utas/%d' % r['post_id']
+            elif r['kind'] == 'dm':
+                txt = '%s sent you a message' % actor
+                link = '/dm/' + r['actor_name']
             else:
                 txt = '%s followed you' % actor
                 link = '/@' + r['actor_name']
@@ -1293,6 +1365,107 @@ class Handler(BaseHTTPRequestHandler):
         self.c.commit()
         self.redirect('/pengaturan')
 
+    # ----- DM handlers -----
+    def handle_dm_inbox(self):
+        if not self.user:
+            return self.redirect('/masuk')
+        c = self.c
+        me = self.user['id']
+        rows = c.execute(
+            'SELECT CASE WHEN sender_id=? THEN recipient_id ELSE sender_id END AS other_id,'
+            ' MAX(created_at) AS last_at,'
+            ' SUM(CASE WHEN recipient_id=? AND read_at IS NULL THEN 1 ELSE 0 END) AS unread_n'
+            ' FROM dms WHERE sender_id=? OR recipient_id=?'
+            ' GROUP BY other_id ORDER BY last_at DESC LIMIT 50',
+            (me, me, me, me)).fetchall()
+        body = '<h2 class="ptitle">Messages</h2>'
+        if not rows:
+            body += '<div class="empty">No conversations yet.<br>Visit someone\'s profile and tap Message.</div>'
+        for r in rows:
+            u = c.execute('SELECT username, display_name FROM users WHERE id=?',
+                          (r['other_id'],)).fetchone()
+            if not u:
+                continue
+            last = c.execute(
+                'SELECT body, sender_id, created_at FROM dms'
+                ' WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)'
+                ' ORDER BY created_at DESC, id DESC LIMIT 1',
+                (me, r['other_id'], r['other_id'], me)).fetchone()
+            preview = (('You: ' if last['sender_id'] == me else '') + last['body'])[:80]
+            badge = '<span class="badge">%d</span>' % r['unread_n'] if r['unread_n'] else ''
+            body += ('<a href="/dm/%s"><div class="notif%s"><div>%s</div>'
+                     '<div class="nt"><span class="nm2">%s</span> %s<br>'
+                     '<span style="color:var(--faint)">%s</span> '
+                     '<span class="tm">%s</span></div></div></a>') % (
+                         esc(u['username']), '' if not r['unread_n'] else ' unread',
+                         avatar_html(u['username'], 40), esc(u['display_name']), badge,
+                         esc(preview), esc(rel_time(last['created_at'])))
+        self.send_html(200, page('Messages', self.user, body, 'dm'))
+
+    def handle_dm_thread(self, username):
+        if not self.user:
+            return self.redirect('/masuk')
+        username = username.split('/')[0].split('?')[0]
+        if not RE_USER.fullmatch(username or ''):
+            return self.err_page(404, 'User not found.')
+        c = self.c
+        u = c.execute('SELECT id, username, display_name FROM users WHERE username=?',
+                      (username,)).fetchone()
+        if not u or u['id'] == self.user['id']:
+            return self.err_page(404, 'User not found.')
+        me = self.user['id']
+        msgs = c.execute(
+            'SELECT id, sender_id, body, created_at FROM dms'
+            ' WHERE (sender_id=? AND recipient_id=?) OR (sender_id=? AND recipient_id=?)'
+            ' ORDER BY created_at ASC, id ASC LIMIT 200',
+            (me, u['id'], u['id'], me)).fetchall()
+        c.execute('UPDATE dms SET read_at=? WHERE recipient_id=? AND sender_id=? AND read_at IS NULL',
+                  (now(), me, u['id']))
+        c.commit()
+        self.user['dm_unread'] = dm_unread_count(c, me)
+        csrf = self.sess['csrf']
+        body = ('<div class="detail-head"><a href="/dm">Messages</a> / %s</div>'
+                '<div class="dmthread">') % esc(u['display_name'])
+        if not msgs:
+            body += '<div class="empty">No messages yet. Say hello.</div>'
+        for m in msgs:
+            mine = m['sender_id'] == me
+            body += ('<div class="dmrow %s"><div class="dmbubble">%s'
+                     '<div class="dmtime">%s</div></div></div>') % (
+                         'mine' if mine else 'theirs', esc(m['body']),
+                         esc(rel_time(m['created_at'])))
+        body += '</div>'
+        body += ('<div class="dmcompose"><form method="post" action="/dm/kirim">'
+                 '<input type="hidden" name="csrf" value="%s">'
+                 '<input type="hidden" name="username" value="%s">'
+                 '<input name="body" maxlength="1000" placeholder="Write a message..." '
+                 'required autocomplete="off">'
+                 '<button class="btn" type="submit">Send</button></form></div>') % (
+                     esc(csrf), esc(username))
+        self.send_html(200, page('Message ' + u['display_name'], self.user, body, 'dm'))
+
+    def post_dm(self):
+        form = self.parse_form()
+        if form is None:
+            return self.err_page(413, 'Data too large.')
+        if not self.user or not self.csrf_ok(form):
+            return self.redirect('/masuk')
+        if not rl_ok(self.ip(), 'dm', 60):
+            return self.err_page(429, 'Too many messages. Try again later.')
+        username = form.get('username', [''])[0].strip()
+        body = form.get('body', [''])[0].strip()
+        if not body or len(body) > 1000:
+            return self.redirect('/dm/' + username if username else '/dm')
+        u = self.c.execute('SELECT id FROM users WHERE username=?', (username,)).fetchone()
+        me = self.user['id']
+        if not u or u['id'] == me:
+            return self.redirect('/dm')
+        self.c.execute('INSERT INTO dms (sender_id, recipient_id, body, created_at)'
+                       ' VALUES (?,?,?,?)', (me, u['id'], body, now()))
+        notify(self.c, u['id'], me, 'dm')
+        self.c.commit()
+        self.redirect('/dm/' + username)
+
     # ----- POST routes -----
     def route_post(self):
         p = self.ppath
@@ -1324,6 +1497,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_pengaturan()
         if p == '/pengaturan/password':
             return self.post_password()
+        if p == '/dm/kirim':
+            return self.post_dm()
         self.err_page(404, 'Page not found.')
 
     def post_daftar(self):
@@ -1427,7 +1602,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self.redirect(nxt)
         p = self.c.execute('SELECT user_id FROM posts WHERE id=?', (pid,)).fetchone()
-        if not p or p['user_id'] != self.user['id']:
+        if not p or (p['user_id'] != self.user['id'] and not self.user.get('is_admin')):
             return self.redirect(nxt)
         c = self.c
         c.execute('''WITH RECURSIVE del(id) AS (

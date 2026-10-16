@@ -57,6 +57,13 @@ over plain HTTP.
 - **Edit**: edit your own threads (marked edited).
 - **Explore**: trending threads of the last 7 days, ranked by engagement.
 - **Settings**: change display name, bio, and password.
+- **DMs**: private 1-on-1 messages — inbox with unread badges, thread view,
+  per-message timestamps, DM notifications. Open from nav or the Message
+  button on anyone's profile.
+- **Admin**: flagged accounts get an ADMIN badge and can delete any thread
+  (moderation). Set via `is_admin` in the users table.
+- **Mobile**: 44px touch targets, scrollable nav, 16px inputs (no iOS zoom),
+  sticky DM composer, responsive breakpoints.
 - Relative timestamps in English ("just now", "5 min", "2 hr", "3 d").
 
 ## Security
@@ -77,7 +84,7 @@ over plain HTTP.
 
 Tables: `users`, `sessions`, `posts` (`parent_id` for replies,
 `edited_at`, `pinned`), `likes`, `reposts`, `follows`,
-`notifications`, `bookmarks`.
+`notifications`, `bookmarks`, `dms`.
 
 ## Known limitations
 
