@@ -91,7 +91,30 @@ def init_db():
     CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
     CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+    CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        actor_id INTEGER NOT NULL,
+        kind TEXT NOT NULL,
+        post_id INTEGER,
+        created_at INTEGER NOT NULL,
+        read_at INTEGER
+    );
+    CREATE TABLE IF NOT EXISTS bookmarks (
+        user_id INTEGER NOT NULL,
+        post_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (user_id, post_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_notif_user ON notifications(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id, created_at DESC);
     ''')
+    for col in ("ALTER TABLE posts ADD COLUMN edited_at INTEGER",
+                "ALTER TABLE posts ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0"):
+        try:
+            c.execute(col)
+        except Exception:
+            pass
     c.commit()
     c.close()
 
@@ -103,6 +126,42 @@ def now():
 
 def esc(s):
     return html.escape(s if s is not None else '', quote=True)
+
+
+RE_MENTION = re.compile(r'(?<!\w)@([a-z0-9_]{3,20})')
+RE_TAG = re.compile(r'(?<!\w)#([A-Za-z0-9_]{2,40})')
+
+
+def render_body(body):
+    """Escape text, then linkify @mentions and #hashtags."""
+    h = esc(body)
+    h = RE_MENTION.sub(lambda m: '<a href="/@%s" class="hl">@%s</a>' % (m.group(1), m.group(1)), h)
+    h = RE_TAG.sub(lambda m: '<a href="/tag/%s" class="hl">#%s</a>' % (m.group(1).lower(), m.group(1)), h)
+    return h
+
+
+def extract_tags(body):
+    return {m.group(1).lower() for m in RE_TAG.finditer(body or '')}
+
+
+def notify(c, user_id, actor_id, kind, post_id=None):
+    if not user_id or user_id == actor_id:
+        return
+    c.execute('INSERT INTO notifications (user_id, actor_id, kind, post_id, created_at)'
+              ' VALUES (?,?,?,?,?)', (user_id, actor_id, kind, post_id, now()))
+
+
+def process_mentions(c, body, author_id, post_id):
+    for m in RE_MENTION.finditer(body or ''):
+        u = c.execute('SELECT id FROM users WHERE username=?', (m.group(1),)).fetchone()
+        if u:
+            notify(c, u['id'], author_id, 'mention', post_id)
+
+
+def unread_count(c, user_id):
+    row = c.execute('SELECT COUNT(*) FROM notifications WHERE user_id=? AND read_at IS NULL',
+                    (user_id,)).fetchone()
+    return row[0] if row else 0
 
 
 def rel_time(ts):
@@ -180,7 +239,8 @@ def get_session_user(c, cookie_header):
     if not row:
         return None, None
     user = {'id': row['id'], 'username': row['username'],
-            'display_name': row['display_name']}
+            'display_name': row['display_name'],
+            'unread': unread_count(c, row['id'])}
     sess = {'token': row['token'], 'csrf': row['csrf']}
     return user, sess
 
@@ -275,7 +335,7 @@ border-bottom:1px solid var(--border)}
 color:var(--muted);font-size:13px}
 .detail-head a{font-weight:700;color:var(--text)}
 .replybox{border-bottom:1px solid var(--border)}
-.footer{padding:24px;text-align:center;color:var(--muted);font-size:12px}
+.hl{color:#7ab8ff;font-weight:600}.badge{display:inline-block;min-width:18px;height:18px;line-height:18px;text-align:center;font-size:11px;font-weight:700;background:var(--red);color:#fff;border-radius:9px;padding:0 5px;margin-left:4px;vertical-align:2px}.pinbadge{display:inline-block;font-size:11px;font-weight:700;color:var(--green);border:1px solid var(--green);border-radius:4px;padding:1px 6px;margin-bottom:4px}.edited{color:var(--muted);font-size:12px}.act.bookmarked{color:var(--green)}.notif{display:flex;gap:12px;padding:14px 16px;border-bottom:1px solid var(--border)}.notif.unread{background:#1a1a1a}.notif .nt{font-size:14px}.notif .nm2{font-weight:700}.ptitle{font-size:18px;font-weight:800;padding:16px 16px 4px}.tagbox{display:flex;flex-wrap:wrap;gap:8px;padding:14px 16px}.tagchip{border:1px solid var(--border);border-radius:16px;padding:6px 12px;font-size:14px;background:var(--panel)}.tagchip:hover{border-color:var(--muted)}.setrow{padding:16px;border-bottom:1px solid var(--border)}.setrow label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}.setrow input{width:100%;background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:10px;font-size:15px;font-family:inherit}.footer{padding:24px;text-align:center;color:var(--muted);font-size:12px}
 """
 
 ICON_REPLY = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
@@ -286,6 +346,8 @@ ICON_REPOST = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
 ICON_LIKE = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
              ' stroke-width="2"><path d="M12 21C7 16.5 3 13 3 8.8 3 6 5.2 4 7.8 4c1.7 0 3.2.9 4.2 2.3C13 4.9 14.5 4 16.2 4 18.8 4 21 6 21 8.8c0 4.2-4 7.7-9 12.2z"/></svg>')
 ICON_LIKE_FILL = ('<svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 21C7 16.5 3 13 3 8.8 3 6 5.2 4 7.8 4c1.7 0 3.2.9 4.2 2.3C13 4.9 14.5 4 16.2 4 18.8 4 21 6 21 8.8c0 4.2-4 7.7-9 12.2z"/></svg>')
+ICON_BOOKMARK = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+                 ' stroke-width="2"><path d="M6 3h12v18l-6-4-6 4z"/></svg>')
 
 
 def avatar_html(username, size=40):
@@ -295,18 +357,26 @@ def avatar_html(username, size=40):
 
 def page(title, user, body_html, nav='beranda'):
     if user:
+        nb = user.get('unread', 0)
+        bell = 'Notifications' + ('<span class="badge">%d</span>' % nb if nb else '')
         nav_html = ('<a href="/" class="%s">Home</a>'
+                    '<a href="/jelajahi" class="%s">Explore</a>'
+                    '<a href="/notifikasi" class="%s">%s</a>'
                     '<a href="/cari" class="%s">Search</a>'
                     '<a href="/@%s" class="%s">Profile</a>') % (
                         'on' if nav == 'beranda' else '',
+                        'on' if nav == 'jelajahi' else '',
+                        'on' if nav == 'notifikasi' else '', bell,
                         'on' if nav == 'cari' else '',
                         esc(user['username']),
                         'on' if nav == 'profil' else '')
     else:
         nav_html = ('<a href="/" class="%s">Home</a>'
+                    '<a href="/jelajahi" class="%s">Explore</a>'
                     '<a href="/cari" class="%s">Search</a>'
                     '<a href="/masuk">Log in</a>') % (
                         'on' if nav == 'beranda' else '',
+                        'on' if nav == 'jelajahi' else '',
                         'on' if nav == 'cari' else '')
     return ('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
@@ -331,9 +401,9 @@ def page(title, user, body_html, nav='beranda'):
 def fmt_count(n):
     n = int(n)
     if n >= 1000000:
-        return '%.1f jt' % (n / 1000000)
+        return '%.1fM' % (n / 1000000)
     if n >= 1000:
-        return '%.1f rb' % (n / 1000)
+        return '%.1fK' % (n / 1000)
     return str(n)
 
 
@@ -359,6 +429,8 @@ def post_row(r, user, csrf, nxt, show_reposter=True):
         repost_line = ('<div class="repostline">%s reposted</div>'
                        % esc(r['reposter_name']))
     detail_link = '/utas/%d' % r['post_id']
+    edited = ('<span class="edited"> - edited</span>' if r.get('edited_at') else '')
+    pinbadge = ('<span class="pinbadge">Pinned</span>' if r.get('pinned') else '')
     actions = ['<a class="act" href="%s">%s<span>%s</span></a>'
                % (detail_link, ICON_REPLY, fmt_count(r['n_reply']))]
     if user:
@@ -372,7 +444,14 @@ def post_row(r, user, csrf, nxt, show_reposter=True):
         actions.append(act_form('/suka', r['post_id'], csrf, nxt,
                                 '%s<span>%s</span>' % (lk_icon, fmt_count(r['n_like'])),
                                 lk_cls))
+        bk_cls = 'bookmarked' if r.get('bookmarked_by_me') else ''
+        actions.append(act_form('/bookmark', r['post_id'], csrf, nxt,
+                                ICON_BOOKMARK, bk_cls))
         if r['author_id'] == user['id']:
+            actions.append('<a class="act" href="/edit?id=%d&next=%s">Edit</a>'
+                           % (r['post_id'], esc(nxt)))
+            pin_label = 'Unpin' if r.get('pinned') else 'Pin'
+            actions.append(act_form('/pin', r['post_id'], csrf, nxt, pin_label, ''))
             actions.append(act_form('/hapus', r['post_id'], csrf, nxt,
                                     'Delete', 'danger'))
     else:
@@ -380,12 +459,12 @@ def post_row(r, user, csrf, nxt, show_reposter=True):
                        % (ICON_REPOST, fmt_count(r['n_repost'])))
         actions.append('<span class="act">%s<span>%s</span></span>'
                        % (ICON_LIKE, fmt_count(r['n_like'])))
-    return ('<article class="post">%s<div class="pbody">%s%s'
-            '<a href="%s" style="display:block"><div class="ptext">%s</div></a>'
+    return ('<article class="post">%s<div class="pbody">%s%s%s'
+            '<a href="%s" style="display:block"><div class="ptext">%s%s</div></a>'
             '<div class="actions">%s</div>'
             '</div></article>') % (
-                avatar_html(r['username']), repost_line, head,
-                detail_link, esc(r['body']), ''.join(actions))
+                avatar_html(r['username']), repost_line, pinbadge, head,
+                detail_link, render_body(r['body']), edited, ''.join(actions))
 
 
 def compose_box(csrf, parent_id=None, placeholder='Start a thread...'):
@@ -403,16 +482,16 @@ def compose_box(csrf, parent_id=None, placeholder='Start a thread...'):
 # ---------------- queries ----------------
 FEED_SQL = '''
 SELECT f.kind, f.post_id, f.author_id, u.username, u.display_name,
-       f.body, f.sort_time, f.reposter_id, ru.username AS reposter_name,
+       f.body, f.edited_at, f.pinned, f.sort_time, f.reposter_id, ru.username AS reposter_name,
        (SELECT COUNT(*) FROM likes l WHERE l.post_id=f.post_id) AS n_like,
        (SELECT COUNT(*) FROM reposts r WHERE r.post_id=f.post_id) AS n_repost,
        (SELECT COUNT(*) FROM posts ch WHERE ch.parent_id=f.post_id) AS n_reply
 FROM (
   SELECT 'post' AS kind, p.id AS post_id, p.user_id AS author_id,
-         p.body, p.created_at AS sort_time, NULL AS reposter_id
+         p.body, p.edited_at, p.pinned, p.created_at AS sort_time, NULL AS reposter_id
   FROM posts p WHERE p.parent_id IS NULL
   UNION ALL
-  SELECT 'repost', p.id, p.user_id, p.body, r.created_at, r.user_id
+  SELECT 'repost', p.id, p.user_id, p.body, p.edited_at, p.pinned, r.created_at, r.user_id
   FROM reposts r JOIN posts p ON p.id=r.post_id WHERE p.parent_id IS NULL
 ) f
 JOIN users u ON u.id=f.author_id
@@ -421,7 +500,7 @@ LEFT JOIN users ru ON ru.id=f.reposter_id
 
 POST_SQL = '''
 SELECT p.id AS post_id, p.user_id AS author_id, u.username, u.display_name,
-       p.body, p.created_at AS sort_time, p.parent_id,
+       p.body, p.edited_at, p.pinned, p.created_at AS sort_time, p.parent_id,
        NULL AS reposter_name, NULL AS reposter_id, 'post' AS kind,
        (SELECT COUNT(*) FROM likes l WHERE l.post_id=p.id) AS n_like,
        (SELECT COUNT(*) FROM reposts r WHERE r.post_id=p.id) AS n_repost,
@@ -548,6 +627,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_profile(p[2:])
         if p.startswith('/utas/'):
             return self.handle_detail(p[len('/utas/'):])
+        if p == '/notifikasi':
+            return self.handle_notifikasi()
+        if p == '/jelajahi':
+            return self.handle_jelajahi()
+        if p == '/bookmark':
+            return self.handle_bookmarks()
+        if p == '/pengaturan':
+            return self.handle_pengaturan()
+        if p == '/edit':
+            return self.handle_edit()
+        if p.startswith('/tag/'):
+            return self.handle_tag(p[len('/tag/'):])
         self.err_page(404, 'Page not found.')
 
     def feed_items(self, where, params, limit, offset):
@@ -556,12 +647,14 @@ class Handler(BaseHTTPRequestHandler):
         rows = c.execute(FEED_SQL + where +
                          ' ORDER BY f.sort_time DESC, f.post_id DESC LIMIT ? OFFSET ?',
                          params + [limit, offset]).fetchall()
-        liked, reposted = set(), set()
+        liked, reposted, bookmarked = set(), set(), set()
         if me:
             liked = {r[0] for r in
                      c.execute('SELECT post_id FROM likes WHERE user_id=?', (me,))}
             reposted = {r[0] for r in
                         c.execute('SELECT post_id FROM reposts WHERE user_id=?', (me,))}
+            bookmarked = {r[0] for r in
+                          c.execute('SELECT post_id FROM bookmarks WHERE user_id=?', (me,))}
         items, seen = [], set()
         for row in rows:
             d = dict(row)
@@ -570,6 +663,7 @@ class Handler(BaseHTTPRequestHandler):
             seen.add(d['post_id'])
             d['liked_by_me'] = d['post_id'] in liked
             d['reposted_by_me'] = d['post_id'] in reposted
+            d['bookmarked_by_me'] = d['post_id'] in bookmarked
             items.append(d)
         return items
 
@@ -727,7 +821,7 @@ class Handler(BaseHTTPRequestHandler):
                       '<button class="btn" type="submit">Save bio</button></div></form>'
                       '<form method="post" action="/keluar" style="margin-top:8px">'
                       '<input type="hidden" name="csrf" value="%s">'
-                      '<button class="btn" type="submit">Log out</button></form>') % (
+                      '<button class="btn" type="submit">Log out</button></form><div style="margin-top:8px"><a href="/pengaturan">Settings</a> - <a href="/bookmark">Bookmarks</a></div>') % (
                           esc(csrf), esc(u['bio']), esc(csrf))
         elif self.user:
             lbl = 'Unfollow' if is_following else 'Follow'
@@ -758,15 +852,17 @@ class Handler(BaseHTTPRequestHandler):
                     esc(username), 'on' if tab == 'utas' else '',
                     esc(username), 'on' if tab == 'balasan' else '',
                     esc(username), 'on' if tab == 'suka' else '')
-        liked, reposted = set(), set()
+        liked, reposted, bookmarked = set(), set(), set()
         if me:
             liked = {r[0] for r in c.execute(
                 'SELECT post_id FROM likes WHERE user_id=?', (me,))}
             reposted = {r[0] for r in c.execute(
                 'SELECT post_id FROM reposts WHERE user_id=?', (me,))}
+            bookmarked = {r[0] for r in c.execute(
+                'SELECT post_id FROM bookmarks WHERE user_id=?', (me,))}
         if tab == 'utas':
             rows = c.execute(POST_SQL + ' WHERE p.user_id=? AND p.parent_id IS NULL'
-                             ' ORDER BY p.created_at DESC, p.id DESC LIMIT 60', (u['id'],)).fetchall()
+                             ' ORDER BY p.pinned DESC, p.created_at DESC, p.id DESC LIMIT 60', (u['id'],)).fetchall()
         elif tab == 'balasan':
             rows = c.execute(
                 '''SELECT p.id AS post_id, p.user_id AS author_id, u.username,
@@ -796,6 +892,7 @@ class Handler(BaseHTTPRequestHandler):
             d = dict(row)
             d['liked_by_me'] = d['post_id'] in liked
             d['reposted_by_me'] = d['post_id'] in reposted
+            d['bookmarked_by_me'] = d['post_id'] in bookmarked
             extra = ''
             if tab == 'balasan' and d.get('parent_user'):
                 extra = ('<div class="repostline" style="padding:10px 16px 0">'
@@ -824,6 +921,11 @@ class Handler(BaseHTTPRequestHandler):
         d = dict(row)
         d['liked_by_me'] = d['post_id'] in liked
         d['reposted_by_me'] = d['post_id'] in reposted
+        d['bookmarked_by_me'] = False
+        if me:
+            d['bookmarked_by_me'] = bool(c.execute(
+                'SELECT 1 FROM bookmarks WHERE user_id=? AND post_id=?',
+                (me, d['post_id'])).fetchone())
         csrf = self.sess['csrf'] if self.sess else ''
         nxt = '/utas/%d' % pid
         body = ('<div class="detail-head"><a href="/">Home</a> / Thread</div>'
@@ -841,8 +943,289 @@ class Handler(BaseHTTPRequestHandler):
             rd = dict(r)
             rd['liked_by_me'] = rd['post_id'] in liked
             rd['reposted_by_me'] = rd['post_id'] in reposted
+            rd['bookmarked_by_me'] = d['bookmarked_by_me']
             body += post_row(rd, self.user, csrf, nxt)
         self.send_html(200, page('Thread', self.user, body))
+
+    # ----- new feature handlers -----
+    def _post_dicts(self, rows):
+        c = self.c
+        me = self.user['id'] if self.user else None
+        liked, reposted, bookmarked = set(), set(), set()
+        if me:
+            liked = {r[0] for r in c.execute('SELECT post_id FROM likes WHERE user_id=?', (me,))}
+            reposted = {r[0] for r in c.execute('SELECT post_id FROM reposts WHERE user_id=?', (me,))}
+            bookmarked = {r[0] for r in c.execute('SELECT post_id FROM bookmarks WHERE user_id=?', (me,))}
+        items = []
+        for row in rows:
+            d = dict(row)
+            d['liked_by_me'] = d['post_id'] in liked
+            d['reposted_by_me'] = d['post_id'] in reposted
+            d['bookmarked_by_me'] = d['post_id'] in bookmarked
+            items.append(d)
+        return items
+
+    def handle_notifikasi(self):
+        if not self.user:
+            return self.redirect('/masuk')
+        c = self.c
+        me = self.user['id']
+        rows = c.execute(
+            'SELECT n.id, n.kind, n.post_id, n.created_at, n.read_at,'
+            ' u.username AS actor_name, u.display_name AS actor_display'
+            ' FROM notifications n JOIN users u ON u.id=n.actor_id'
+            ' WHERE n.user_id=? ORDER BY n.created_at DESC LIMIT 50',
+            (me,)).fetchall()
+        c.execute('UPDATE notifications SET read_at=? WHERE user_id=? AND read_at IS NULL',
+                  (now(), me))
+        c.commit()
+        self.user['unread'] = 0
+        body = '<h2 class="ptitle">Notifications</h2>'
+        if not rows:
+            body += '<div class="empty">Nothing here yet.</div>'
+        for r in rows:
+            actor = '<a class="nm2" href="/@%s">%s</a>' % (esc(r['actor_name']), esc(r['actor_display']))
+            if r['kind'] == 'like':
+                txt = '%s liked your thread' % actor
+                link = '/utas/%d' % r['post_id']
+            elif r['kind'] == 'repost':
+                txt = '%s reposted your thread' % actor
+                link = '/utas/%d' % r['post_id']
+            elif r['kind'] == 'reply':
+                txt = '%s replied to your thread' % actor
+                link = '/utas/%d' % r['post_id']
+            elif r['kind'] == 'mention':
+                txt = '%s mentioned you' % actor
+                link = '/utas/%d' % r['post_id']
+            else:
+                txt = '%s followed you' % actor
+                link = '/@' + r['actor_name']
+            body += ('<a href="%s"><div class="notif%s"><div>%s</div>'
+                     '<div class="nt">%s<br><span class="tm">%s</span></div></div></a>') % (
+                         esc(link), '' if r['read_at'] else ' unread',
+                         avatar_html(r['actor_name'], 36), txt, esc(rel_time(r['created_at'])))
+        self.send_html(200, page('Notifications', self.user, body, 'notifikasi'))
+
+    def handle_tag(self, tag):
+        tag = tag.lower()
+        if not re.fullmatch(r'[a-z0-9_]{2,40}', tag):
+            return self.err_page(404, 'Page not found.')
+        c = self.c
+        rows = c.execute(POST_SQL + ' WHERE p.parent_id IS NULL'
+                         ' ORDER BY p.created_at DESC LIMIT 500').fetchall()
+        items = [d for d in self._post_dicts(rows)
+                 if tag in extract_tags(d['body'])]
+        csrf = self.sess['csrf'] if self.sess else ''
+        nxt = '/tag/' + tag
+        body = '<h2 class="ptitle">#%s</h2>' % esc(tag)
+        if not items:
+            body += '<div class="empty">No threads with this hashtag yet.</div>'
+        for d in items[:40]:
+            body += post_row(d, self.user, csrf, nxt)
+        self.send_html(200, page('#' + tag, self.user, body))
+
+    def handle_bookmarks(self):
+        if not self.user:
+            return self.redirect('/masuk')
+        c = self.c
+        rows = c.execute(POST_SQL + ' WHERE p.id IN'
+                         ' (SELECT post_id FROM bookmarks WHERE user_id=?)'
+                         ' ORDER BY p.created_at DESC, p.id DESC LIMIT 60',
+                         (self.user['id'],)).fetchall()
+        items = self._post_dicts(rows)
+        csrf = self.sess['csrf']
+        nxt = '/bookmark'
+        body = '<h2 class="ptitle">Bookmarks</h2>'
+        if not items:
+            body += '<div class="empty">No bookmarks yet. Tap the bookmark icon on any thread.</div>'
+        for d in items:
+            body += post_row(d, self.user, csrf, nxt)
+        self.send_html(200, page('Bookmarks', self.user, body))
+
+    def handle_edit(self):
+        if not self.user:
+            return self.redirect('/masuk')
+        try:
+            pid = int(self.query.get('id', ['0'])[0])
+        except ValueError:
+            return self.err_page(404, 'Page not found.')
+        r = self.c.execute('SELECT id, user_id, body FROM posts WHERE id=?', (pid,)).fetchone()
+        if not r or r['user_id'] != self.user['id']:
+            return self.err_page(404, 'Page not found.')
+        csrf = self.sess['csrf']
+        nxt = self.query.get('next', ['/'])[0]
+        body = ('<h2 class="ptitle">Edit thread</h2>'
+                '<div class="compose"><form method="post" action="/edit">'
+                '<input type="hidden" name="csrf" value="%s">'
+                '<input type="hidden" name="id" value="%d">'
+                '<input type="hidden" name="next" value="%s">'
+                '<textarea name="body" maxlength="500" rows="4">%s</textarea>'
+                '<div class="crow"><span class="ccount"></span>'
+                '<button class="btn" type="submit">Save</button></div>'
+                '</form></div>') % (esc(csrf), pid, esc(nxt), esc(r['body']))
+        self.send_html(200, page('Edit thread', self.user, body))
+
+    def post_edit(self):
+        form = self.parse_form()
+        if form is None:
+            return self.err_page(413, 'Data too large.')
+        nxt = self.safe_next(form) if form else '/'
+        if not self.user or not self.csrf_ok(form):
+            return self.redirect('/masuk')
+        try:
+            pid = int(form.get('id', ['0'])[0])
+        except ValueError:
+            return self.redirect(nxt)
+        body = form.get('body', [''])[0].strip()
+        if not body or len(body) > 500:
+            return self.redirect(nxt)
+        r = self.c.execute('SELECT user_id FROM posts WHERE id=?', (pid,)).fetchone()
+        if not r or r['user_id'] != self.user['id']:
+            return self.redirect(nxt)
+        self.c.execute('UPDATE posts SET body=?, edited_at=? WHERE id=?',
+                       (body, now(), pid))
+        process_mentions(self.c, body, self.user['id'], pid)
+        self.c.commit()
+        self.redirect(nxt)
+
+    def post_bookmark(self):
+        form = self.parse_form()
+        if form is None:
+            return self.err_page(413, 'Data too large.')
+        nxt = self.safe_next(form) if form else '/'
+        if not self.user or not self.csrf_ok(form):
+            return self.redirect('/masuk')
+        try:
+            pid = int(form.get('id', ['0'])[0])
+        except ValueError:
+            return self.redirect(nxt)
+        if not self.c.execute('SELECT 1 FROM posts WHERE id=?', (pid,)).fetchone():
+            return self.redirect(nxt)
+        me = self.user['id']
+        if self.c.execute('SELECT 1 FROM bookmarks WHERE user_id=? AND post_id=?',
+                          (me, pid)).fetchone():
+            self.c.execute('DELETE FROM bookmarks WHERE user_id=? AND post_id=?', (me, pid))
+        else:
+            self.c.execute('INSERT INTO bookmarks (user_id, post_id, created_at)'
+                           ' VALUES (?,?,?)', (me, pid, now()))
+        self.c.commit()
+        self.redirect(nxt)
+
+    def post_pin(self):
+        form = self.parse_form()
+        if form is None:
+            return self.err_page(413, 'Data too large.')
+        nxt = self.safe_next(form) if form else '/'
+        if not self.user or not self.csrf_ok(form):
+            return self.redirect('/masuk')
+        try:
+            pid = int(form.get('id', ['0'])[0])
+        except ValueError:
+            return self.redirect(nxt)
+        me = self.user['id']
+        r = self.c.execute('SELECT user_id, pinned FROM posts WHERE id=?', (pid,)).fetchone()
+        if not r or r['user_id'] != me:
+            return self.redirect(nxt)
+        if r['pinned']:
+            self.c.execute('UPDATE posts SET pinned=0 WHERE id=?', (pid,))
+        else:
+            self.c.execute('UPDATE posts SET pinned=0 WHERE user_id=?', (me,))
+            self.c.execute('UPDATE posts SET pinned=1 WHERE id=?', (pid,))
+        self.c.commit()
+        self.redirect(nxt)
+
+    def handle_jelajahi(self):
+        c = self.c
+        week = now() - 7 * 86400
+        rows = c.execute(POST_SQL +
+                         ' WHERE p.parent_id IS NULL AND p.created_at>?'
+                         ' ORDER BY ((SELECT COUNT(*) FROM likes l WHERE l.post_id=p.id)'
+                         ' + 2*(SELECT COUNT(*) FROM reposts r WHERE r.post_id=p.id)'
+                         ' + (SELECT COUNT(*) FROM posts ch WHERE ch.parent_id=p.id)) DESC,'
+                         ' p.created_at DESC LIMIT 20', (week,)).fetchall()
+        items = self._post_dicts(rows)
+        tag_counts = {}
+        for r in c.execute('SELECT body FROM posts WHERE created_at>? ORDER BY created_at DESC LIMIT 500',
+                           (week,)):
+            for tg in extract_tags(r['body']):
+                tag_counts[tg] = tag_counts.get(tg, 0) + 1
+        top_tags = sorted(tag_counts.items(), key=lambda kv: kv[1], reverse=True)[:10]
+        csrf = self.sess['csrf'] if self.sess else ''
+        nxt = '/jelajahi'
+        body = '<h2 class="ptitle">Trending tags</h2>'
+        if top_tags:
+            body += '<div class="tagbox">' + ''.join(
+                '<a class="tagchip" href="/tag/%s">#%s <span class="tm">%d</span></a>' % (tg, tg, n)
+                for tg, n in top_tags) + '</div>'
+        else:
+            body += '<div class="empty">No hashtags this week yet.</div>'
+        body += '<h2 class="ptitle">Trending threads</h2>'
+        if not items:
+            body += '<div class="empty">Nothing trending yet.</div>'
+        for d in items:
+            body += post_row(d, self.user, csrf, nxt)
+        self.send_html(200, page('Explore', self.user, body, 'jelajahi'))
+
+    def handle_pengaturan(self):
+        if not self.user:
+            return self.redirect('/masuk')
+        csrf = self.sess['csrf']
+        u = self.c.execute('SELECT display_name, bio FROM users WHERE id=?',
+                           (self.user['id'],)).fetchone()
+        body = ('<h2 class="ptitle">Settings</h2>'
+                '<div class="setrow"><form method="post" action="/pengaturan">'
+                '<input type="hidden" name="csrf" value="%s">'
+                '<label>Display name (3-40 chars)</label>'
+                '<input name="display_name" maxlength="40" value="%s" style="margin-bottom:10px">'
+                '<label>Bio (max 160 chars)</label>'
+                '<input name="bio" maxlength="160" value="%s" style="margin-bottom:10px">'
+                '<button class="btn" type="submit">Save profile</button></form></div>'
+                '<div class="setrow"><form method="post" action="/pengaturan/password">'
+                '<input type="hidden" name="csrf" value="%s">'
+                '<label>Current password</label>'
+                '<input type="password" name="current_pw" style="margin-bottom:10px">'
+                '<label>New password (min 8 chars)</label>'
+                '<input type="password" name="new_pw" style="margin-bottom:10px">'
+                '<button class="btn" type="submit">Change password</button></form></div>'
+                '<div class="setrow"><a href="/bookmark">My bookmarks</a></div>') % (
+                    esc(csrf), esc(u['display_name']), esc(u['bio']), esc(csrf))
+        self.send_html(200, page('Settings', self.user, body))
+
+    def post_pengaturan(self):
+        form = self.parse_form()
+        if form is None:
+            return self.err_page(413, 'Data too large.')
+        if not self.user or not self.csrf_ok(form):
+            return self.redirect('/masuk')
+        name = form.get('display_name', [''])[0].strip()[:40]
+        bio = form.get('bio', [''])[0].strip()[:160]
+        if len(name) < 3:
+            return self.err_page(400, 'Display name too short.')
+        self.c.execute('UPDATE users SET display_name=?, bio=? WHERE id=?',
+                       (name, bio, self.user['id']))
+        self.c.commit()
+        self.user['display_name'] = name
+        self.redirect('/pengaturan')
+
+    def post_password(self):
+        form = self.parse_form()
+        if form is None:
+            return self.err_page(413, 'Data too large.')
+        if not self.user or not self.csrf_ok(form):
+            return self.redirect('/masuk')
+        cur_pw = form.get('current_pw', [''])[0]
+        new_pw = form.get('new_pw', [''])[0]
+        u = self.c.execute('SELECT salt, pw_hash FROM users WHERE id=?',
+                           (self.user['id'],)).fetchone()
+        if hash_pw(cur_pw, u['salt']) != u['pw_hash']:
+            return self.err_page(400, 'Current password is wrong.')
+        if len(new_pw) < 8:
+            return self.err_page(400, 'New password must be at least 8 characters.')
+        salt = secrets.token_hex(16)
+        self.c.execute('UPDATE users SET salt=?, pw_hash=? WHERE id=?',
+                       (salt, hash_pw(new_pw, salt), self.user['id']))
+        self.c.commit()
+        self.redirect('/pengaturan')
 
     # ----- POST routes -----
     def route_post(self):
@@ -865,6 +1248,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.post_ikuti()
         if p == '/bio':
             return self.post_bio()
+        if p == '/bookmark':
+            return self.post_bookmark()
+        if p == '/pin':
+            return self.post_pin()
+        if p == '/edit':
+            return self.post_edit()
+        if p == '/pengaturan':
+            return self.post_pengaturan()
+        if p == '/pengaturan/password':
+            return self.post_password()
         self.err_page(404, 'Page not found.')
 
     def post_daftar(self):
@@ -944,9 +1337,15 @@ class Handler(BaseHTTPRequestHandler):
             if not self.c.execute('SELECT 1 FROM posts WHERE id=?',
                                   (parent,)).fetchone():
                 return self.redirect('/')
-        self.c.execute('INSERT INTO posts (user_id, body, parent_id, created_at)'
-                       ' VALUES (?,?,?,?)',
-                       (self.user['id'], body, parent, now()))
+        cur = self.c.execute('INSERT INTO posts (user_id, body, parent_id, created_at)'
+                               ' VALUES (?,?,?,?)',
+                               (self.user['id'], body, parent, now()))
+        pid = cur.lastrowid
+        if parent:
+            pa = self.c.execute('SELECT user_id FROM posts WHERE id=?', (parent,)).fetchone()
+            if pa:
+                notify(self.c, pa['user_id'], self.user['id'], 'reply', parent)
+        process_mentions(self.c, body, self.user['id'], pid)
         self.c.commit()
         self.redirect('/utas/%d' % parent if parent else '/')
 
@@ -999,6 +1398,10 @@ class Handler(BaseHTTPRequestHandler):
         else:
             c.execute('INSERT INTO %s (user_id, post_id, created_at) VALUES (?,?,?)'
                       % table, (me, pid, now()))
+            pa = c.execute('SELECT user_id FROM posts WHERE id=?', (pid,)).fetchone()
+            if pa:
+                notify(c, pa['user_id'], me,
+                       'like' if table == 'likes' else 'repost', pid)
         c.commit()
         self.redirect(nxt)
 
@@ -1023,6 +1426,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             c.execute('INSERT INTO follows (follower_id, followee_id, created_at)'
                       ' VALUES (?,?,?)', (me, u['id'], now()))
+            notify(c, u['id'], me, 'follow')
         c.commit()
         self.redirect(nxt)
 

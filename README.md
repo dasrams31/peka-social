@@ -47,8 +47,16 @@ over plain HTTP.
 - **Reposts**: toggle repost; shown in feed with reposter attribution.
 - **Follow**: follow/unfollow + follower/following counts.
 - **Profile** `/@username`: name, bio (max 160, editable), join date, counts,
-  **Threads / Replies / Likes** tabs.
+  **Threads / Replies / Likes** tabs. Pin one thread to the top of your profile.
 - **Search** users.
+- **Mentions**: `@username` in a thread links to their profile and notifies them.
+- **Hashtags**: `#tag` in a thread links to its tag page; trending tags on Explore.
+- **Notifications**: bell in nav with unread badge — likes, reposts, replies,
+  mentions, follows. Marked read when opened.
+- **Bookmarks**: save threads, read them later on the Bookmarks page.
+- **Edit**: edit your own threads (marked edited).
+- **Explore**: trending threads of the last 7 days, ranked by engagement.
+- **Settings**: change display name, bio, and password.
 - Relative timestamps in English ("just now", "5 min", "2 hr", "3 d").
 
 ## Security
@@ -67,8 +75,9 @@ over plain HTTP.
 | SQLite database (WAL) | `data/peka.db` |
 | systemd unit | `peka-social.service` |
 
-Tables: `users`, `sessions`, `posts` (`parent_id` for replies),
-`likes`, `reposts`, `follows`.
+Tables: `users`, `sessions`, `posts` (`parent_id` for replies,
+`edited_at`, `pinned`), `likes`, `reposts`, `follows`,
+`notifications`, `bookmarks`.
 
 ## Known limitations
 
