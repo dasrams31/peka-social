@@ -280,7 +280,28 @@ a{color:inherit;text-decoration:none}
 button{font-family:inherit}
 .wrap{max-width:640px;margin:0 auto;min-height:100vh;
 border-left:1px solid var(--border);border-right:1px solid var(--border);background:var(--bg)}
-@media(max-width:660px){.wrap{border-left:none;border-right:none}}
+@media(max-width:660px){.wrap{border-left:none;border-right:none}
+.prow{flex-wrap:wrap}
+.pmeta{gap:12px}
+.ptitle{padding:16px 14px 4px}
+.urow{padding:12px 14px;gap:10px}
+.urow .btn{flex:none}
+.nav{display:none}
+.burger{display:flex;align-items:center;justify-content:center;flex:none;
+width:44px;height:44px;border-radius:12px;cursor:pointer;color:var(--muted);
+transition:background .15s,color .15s}
+.burger:hover{background:var(--panel2);color:var(--text)}
+.burger svg{width:22px;height:22px}
+.navtoggle:checked~.drawer{display:block}
+.drawer{border-top:1px solid var(--border);background:var(--bg);
+max-height:72vh;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.drawer nav{display:flex;flex-direction:column;padding:8px 8px 12px;gap:2px}
+.drawer a{display:flex;align-items:center;min-height:52px;padding:12px 16px;
+border-radius:12px;font-weight:700;font-size:15.5px;color:var(--muted)}
+.drawer a:hover{background:var(--panel2);color:var(--text)}
+.drawer a.on{color:var(--text);background:var(--panel2)}
+.drawer a .cnt{margin-left:auto;font-size:12.5px;font-weight:600;color:var(--faint)}
+}
 .topbar{position:sticky;top:0;z-index:20;background:rgba(13,13,14,.88);
 backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
 border-bottom:1px solid var(--border)}
@@ -294,6 +315,9 @@ justify-content:space-between;padding:10px 16px;gap:8px}
 font-size:13.5px;white-space:nowrap;transition:background .15s,color .15s;position:relative}
 .nav a:hover{background:var(--panel2);color:var(--text)}
 .nav a.on{color:var(--text);background:var(--panel2)}
+.navtoggle{position:absolute;opacity:0;pointer-events:none;width:0;height:0}
+.burger{display:none}
+.drawer{display:none}
 .tabs{display:flex;border-bottom:1px solid var(--border);background:var(--bg)}
 .tabs a{flex:1;text-align:center;padding:13px 8px;font-weight:700;color:var(--muted);
 border-bottom:2px solid transparent;font-size:14px;transition:color .15s}
@@ -476,41 +500,43 @@ def avatar_html(username, size=40):
             % (avatar_color(username), esc(username[0].upper())))
 
 
+ICON_BURGER = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+               ' stroke-width="2" stroke-linecap="round">'
+               '<path d="M4 7h16M4 12h16M4 17h16"/></svg>')
+
+
 def page(title, user, body_html, nav='beranda'):
     if user:
         nb = user.get('unread', 0)
         bell = 'Notifications' + ('<span class="badge">%d</span>' % nb if nb else '')
         dm = user.get('dm_unread', 0)
         msg = 'Messages' + ('<span class="badge">%d</span>' % dm if dm else '')
-        nav_html = ('<a href="/" class="%s">Home</a>'
-                    '<a href="/jelajahi" class="%s">Explore</a>'
-                    '<a href="/notifikasi" class="%s">%s</a>'
-                    '<a href="/dm" class="%s">%s</a>'
-                    '<a href="/cari" class="%s">Search</a>'
-                    '<a href="/@%s" class="%s">Profile</a>') % (
-                        'on' if nav == 'beranda' else '',
-                        'on' if nav == 'jelajahi' else '',
-                        'on' if nav == 'notifikasi' else '', bell,
-                        'on' if nav == 'dm' else '', msg,
-                        'on' if nav == 'cari' else '',
-                        esc(user['username']),
-                        'on' if nav == 'profil' else '')
+        links = (('<a href="/" class="%s">Home</a>' % ('on' if nav == 'beranda' else '')) +
+                 ('<a href="/jelajahi" class="%s">Explore</a>' % ('on' if nav == 'jelajahi' else '')) +
+                 ('<a href="/notifikasi" class="%s">%s</a>' % ('on' if nav == 'notifikasi' else '', bell)) +
+                 ('<a href="/dm" class="%s">%s</a>' % ('on' if nav == 'dm' else '', msg)) +
+                 ('<a href="/pengguna" class="%s">People</a>' % ('on' if nav == 'pengguna' else '')) +
+                 ('<a href="/cari" class="%s">Search</a>' % ('on' if nav == 'cari' else '')) +
+                 ('<a href="/@%s" class="%s">Profile</a>' % (esc(user['username']), 'on' if nav == 'profil' else '')))
     else:
-        nav_html = ('<a href="/" class="%s">Home</a>'
-                    '<a href="/jelajahi" class="%s">Explore</a>'
-                    '<a href="/cari" class="%s">Search</a>'
-                    '<a href="/masuk">Log in</a>') % (
-                        'on' if nav == 'beranda' else '',
-                        'on' if nav == 'jelajahi' else '',
-                        'on' if nav == 'cari' else '')
+        links = (('<a href="/" class="%s">Home</a>' % ('on' if nav == 'beranda' else '')) +
+                 ('<a href="/jelajahi" class="%s">Explore</a>' % ('on' if nav == 'jelajahi' else '')) +
+                 ('<a href="/pengguna" class="%s">People</a>' % ('on' if nav == 'pengguna' else '')) +
+                 ('<a href="/cari" class="%s">Search</a>' % ('on' if nav == 'cari' else '')) +
+                 '<a href="/masuk">Log in</a>')
     return ('<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width,initial-scale=1">'
             '<title>%s - Peka</title><style>%s</style></head>'
             '<body><div class="wrap">'
-            '<div class="topbar"><div class="topbar-in">'
+            '<div class="topbar">'
+            '<input type="checkbox" id="navtoggle" class="navtoggle" aria-label="Menu toggle">'
+            '<div class="topbar-in">'
             '<a class="wordmark" href="/">Peka<span class="dot">.</span></a>'
             '<nav class="nav">%s</nav>'
-            '</div></div>%s'
+            '<label class="burger" for="navtoggle" aria-label="Open menu">%s</label>'
+            '</div>'
+            '<div class="drawer"><nav>%s</nav></div>'
+            '</div>%s'
             '<div class="footer">Peka &mdash; simple microblogging over Tor</div>'
             '</div>'
             '<script>'
@@ -519,8 +545,11 @@ def page(title, user, body_html, nav='beranda'):
             'if(!c)return;'
             'function u(){var r=500-t.value.length;c.textContent=r;}'
             't.addEventListener("input",u);u();});'
+            'document.querySelectorAll(".drawer a").forEach(function(a){'
+            'a.addEventListener("click",function(){'
+            'document.getElementById("navtoggle").checked=false;});});'
             '</script>'
-            '</body></html>') % (esc(title), CSS, nav_html, body_html)
+            '</body></html>') % (esc(title), CSS, links, ICON_BURGER, links, body_html)
 
 
 def fmt_count(n):
@@ -761,6 +790,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_notifikasi()
         if p == '/jelajahi':
             return self.handle_jelajahi()
+        if p == '/pengguna':
+            return self.handle_users()
         if p == '/bookmark':
             return self.handle_bookmarks()
         if p == '/pengaturan':
@@ -848,6 +879,47 @@ class Handler(BaseHTTPRequestHandler):
                    if has_next else '')
             body += '<div class="pager">%s%s</div>' % (prev, nex)
         self.send_html(200, page('Home', self.user, body, 'beranda'))
+
+    def handle_users(self):
+        csrf = self.sess['csrf'] if self.sess else ''
+        rows = self.c.execute(
+            'SELECT u.id, u.username, u.display_name, u.bio, u.is_admin,'
+            ' (SELECT COUNT(*) FROM follows WHERE followee_id=u.id) AS nfollowers,'
+            ' (SELECT COUNT(*) FROM posts WHERE user_id=u.id AND parent_id IS NULL) AS nposts'
+            ' FROM users u ORDER BY u.is_admin DESC, u.created_at ASC').fetchall()
+        body = ('<div class="ptitle">People</div>'
+                '<div class="detail-head">%d registered %s</div>'
+                ) % (len(rows), 'user' if len(rows) == 1 else 'users')
+        if not rows:
+            body += '<div class="empty">No users yet.</div>'
+        for r in rows:
+            btn = ''
+            if self.user and r['id'] != self.user['id']:
+                f = self.c.execute(
+                    'SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?',
+                    (self.user['id'], r['id'])).fetchone()
+                lbl = 'Unfollow' if f else 'Follow'
+                btn = ('<form method="post" action="/ikuti">'
+                       '<input type="hidden" name="csrf" value="%s">'
+                       '<input type="hidden" name="username" value="%s">'
+                       '<input type="hidden" name="next" value="/pengguna">'
+                       '<button class="btn" type="submit">%s</button></form>'
+                       ) % (esc(csrf), esc(r['username']), lbl)
+            badge = ' <span class="adminbadge">ADMIN</span>' if r['is_admin'] else ''
+            stats = ('<div style="color:var(--faint);font-size:12.5px;margin-top:3px">'
+                     '%d %s &middot; %d %s</div>'
+                     ) % (r['nfollowers'], 'follower' if r['nfollowers'] == 1 else 'followers',
+                          r['nposts'], 'post' if r['nposts'] == 1 else 'posts')
+            bio = ('<div style="color:var(--muted);font-size:13px">%s</div>'
+                   % esc(r['bio'][:80])) if r['bio'] else ''
+            body += ('<div class="urow">%s<div class="who">'
+                     '<a href="/@%s"><b>%s</b></a>%s '
+                     '<span style="color:var(--muted)">@%s</span>'
+                     '%s%s</div>%s</div>') % (
+                avatar_html(r['username']), esc(r['username']),
+                esc(r['display_name']), badge, esc(r['username']),
+                bio, stats, btn)
+        self.send_html(200, page('People', self.user, body, 'pengguna'))
 
     def handle_search(self):
         q = self.query.get('q', [''])[0].strip()[:40]
